@@ -1,5 +1,6 @@
 """Command-line entry point for generating subtitles from Japanese audio."""
-
+import os
+os.add_dll_directory(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin")
 import argparse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
