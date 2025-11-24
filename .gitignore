@@ -1,0 +1,9 @@
+# Ignore raw media inputs and generated outputs
+inputs/
+
+# Large media artifacts
+*.mp4
+*.wav
+
+# Generated subtitle files
+*.srt
