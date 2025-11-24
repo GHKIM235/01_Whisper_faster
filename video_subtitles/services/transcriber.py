@@ -77,7 +77,6 @@ class WhisperTranscriber:
             language="ja",
             task="transcribe",
             beam_size=5,
-            batch_size=32,
         )
         return list(segments)
 
