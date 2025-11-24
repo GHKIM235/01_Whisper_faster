@@ -3,7 +3,7 @@
 from typing import Any, Dict, List, Optional
 
 import torch
-import whisper
+from faster_whisper import WhisperModel
 from tqdm.auto import tqdm
 
 from .audio_chunker import AudioChunk
@@ -20,7 +20,8 @@ class WhisperTranscriber:
         print(f"Using device: {self.device}")
         if self.device == "cuda":
             print("CUDA acceleration enabled for Whisper transcription.")
-        self.model = whisper.load_model(self.model_name, device=self.device)
+
+        self.model = self._load_model(self.device)
 
     def transcribe_chunks(self, chunks: List[AudioChunk]) -> List[Dict[str, Any]]:
         """
@@ -43,17 +44,12 @@ class WhisperTranscriber:
         for index, chunk in enumerate(progress_bar, start=1):
             progress_bar.set_postfix_str(f"chunk {index}/{total_chunks}")
 
-            transcription = self.model.transcribe(
-                str(chunk.path),
-                language="ja",
-                task="transcribe",
-                fp16=self.device == "cuda",
-            )
+            segments = self._transcribe_with_fallback(str(chunk.path))
 
-            for segment in transcription.get("segments", []):
-                start = chunk.start_time + float(segment["start"])
-                end = chunk.start_time + float(segment["end"])
-                text = segment["text"].strip()
+            for segment in segments:
+                start = chunk.start_time + float(segment.start)
+                end = chunk.start_time + float(segment.end)
+                text = segment.text.strip()
                 if not text:
                     continue
                 results.append(
@@ -66,3 +62,35 @@ class WhisperTranscriber:
 
         progress_bar.close()
         return results
+
+    def _load_model(self, device: str) -> WhisperModel:
+        compute_type = "float16" if device == "cuda" else "int8"
+        return WhisperModel(
+            self.model_name,
+            device=device,
+            compute_type=compute_type,
+        )
+
+    def _run_transcription(self, file_path: str):
+        segments, _ = self.model.transcribe(
+            file_path,
+            language="ja",
+            task="transcribe",
+            beam_size=5,
+        )
+        return list(segments)
+
+    def _transcribe_with_fallback(self, file_path: str):
+        try:
+            return self._run_transcription(file_path)
+        except RuntimeError as exc:
+            needs_fallback = self.device == "cuda" and "CUDNN_STATUS_NOT_INITIALIZED" in str(
+                exc
+            )
+            if not needs_fallback:
+                raise
+
+            print("cuDNN initialization failed. Falling back to CPU for transcription.")
+            self.device = "cpu"
+            self.model = self._load_model(self.device)
+            return self._run_transcription(file_path)
