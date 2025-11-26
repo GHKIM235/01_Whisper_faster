@@ -12,7 +12,6 @@ from .audio_chunker import AudioChunk
 class WhisperTranscriber:
     """Thin wrapper around OpenAI Whisper for chunked transcription."""
 
-    # Available model sizes include: "tiny", "base", "small", "medium", "large-v3".
     DEFAULT_MODEL_NAME = "medium"
 
     def __init__(self, model_name: Optional[str] = None):
