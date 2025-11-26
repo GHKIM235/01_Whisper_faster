@@ -1,6 +1,21 @@
 """Whisper transcription service that assumes Japanese audio input."""
 
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+CUDA_DLL_HANDLE = None
+CUDA_DEFAULT_PATH = Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin")
+CUDA_ENV_PATH = os.environ.get("CUDA_DLL_DIR")
+CUDA_PATH_CANDIDATES = [
+    Path(CUDA_ENV_PATH) if CUDA_ENV_PATH else None,
+    CUDA_DEFAULT_PATH,
+]
+if os.name == "nt":
+    for candidate in CUDA_PATH_CANDIDATES:
+        if candidate and candidate.exists():
+            CUDA_DLL_HANDLE = os.add_dll_directory(str(candidate))
+            break
 
 import torch
 from faster_whisper import WhisperModel
@@ -10,7 +25,7 @@ from .audio_chunker import AudioChunk
 
 
 class WhisperTranscriber:
-    """Thin wrapper around OpenAI Whisper for chunked transcription."""
+    """Thin wrapper around faster-whisper for chunked transcription."""
 
     DEFAULT_MODEL_NAME = "medium"
 
@@ -77,6 +92,7 @@ class WhisperTranscriber:
             language="ja",
             task="transcribe",
             beam_size=5,
+            vad_filter=True,
         )
         return list(segments)
 
