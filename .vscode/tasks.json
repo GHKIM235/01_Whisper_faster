@@ -1,0 +1,22 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Process input videos",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$workspace = \"${workspaceFolder}\"; $inputDir = Join-Path $workspace 'video_subtitles\\inputs'; $script = Join-Path $workspace 'video_subtitles\\main.py'; Get-ChildItem -Path $inputDir -File -Include *.mp4,*.mov,*.mkv,*.m4a,*.3gp,*.3g2 -ErrorAction SilentlyContinue | Sort-Object FullName | ForEach-Object { Write-Host (\"Processing \" + $_.FullName); python $script $_.FullName }"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
