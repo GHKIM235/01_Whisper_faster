@@ -1,17 +1,14 @@
 """Command-line entry point for generating subtitles from Japanese audio."""
 import os
-os.add_dll_directory(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin")
 import argparse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.audio_extractor import extract_audio
-from services.audio_chunker import chunk_audio
 from services.transcriber import WhisperTranscriber
 from services.translator import JapaneseToKoreanTranslator
 from services.srt_writer import write_srt
 from utils.segment_store import load_segments, save_segments
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -62,16 +59,11 @@ def run_transcription_pipeline(
         raise FileNotFoundError(f"Video not found: {video_path}")
 
     working_dir = video_path.parent / f"{video_path.stem}_work"
-    chunks_dir = working_dir / "chunks"
-
     audio_path = extract_audio(video_path, working_dir)
-    chunks = chunk_audio(audio_path, chunks_dir)
-
-    if not chunks:
-        raise RuntimeError("No audio chunks were generated.")
 
     transcriber = WhisperTranscriber(model_name=model_name)
-    segments = transcriber.transcribe_chunks(chunks)
+    segments = transcriber.transcribe(audio_path)
+    
     if not segments:
         raise RuntimeError("No transcription segments were produced.")
 
@@ -80,6 +72,7 @@ def run_transcription_pipeline(
 
     segments_path = video_path.with_name(f"{video_path.stem}_segments.json")
     save_segments(segments, segments_path, source_video=video_path)
+    
     ko_output_path: Optional[Path] = None
     if translate:
         ko_output_path = _write_korean_srt(

@@ -1,31 +1,32 @@
-"""Whisper transcription service that assumes Japanese audio input."""
+"""Whisper transcription service optimized for direct file processing and GPU usage."""
 
 import os
+import torch
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-CUDA_DLL_HANDLE = None
-CUDA_DEFAULT_PATH = Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin")
-CUDA_ENV_PATH = os.environ.get("CUDA_DLL_DIR")
-CUDA_PATH_CANDIDATES = [
-    Path(CUDA_ENV_PATH) if CUDA_ENV_PATH else None,
-    CUDA_DEFAULT_PATH,
-]
-if os.name == "nt":
-    for candidate in CUDA_PATH_CANDIDATES:
-        if candidate and candidate.exists():
-            CUDA_DLL_HANDLE = os.add_dll_directory(str(candidate))
-            break
-
-import torch
 from faster_whisper import WhisperModel
 from tqdm.auto import tqdm
 
-from .audio_chunker import AudioChunk
+# Windows-specific DLL handling, only for Windows
+if os.name == "nt":
+    CUDA_DLL_HANDLE = None
+    CUDA_DEFAULT_PATH = Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin")
+    CUDA_ENV_PATH = os.environ.get("CUDA_DLL_DIR")
+    CUDA_PATH_CANDIDATES = [
+        Path(CUDA_ENV_PATH) if CUDA_ENV_PATH else None,
+        CUDA_DEFAULT_PATH,
+    ]
+    for candidate in CUDA_PATH_CANDIDATES:
+        if candidate and candidate.exists():
+            try:
+                CUDA_DLL_HANDLE = os.add_dll_directory(str(candidate))
+                break
+            except Exception:
+                pass
 
 
 class WhisperTranscriber:
-    """Thin wrapper around faster-whisper for chunked transcription."""
+    """A wrapper around faster-whisper that handles full audio files efficiently."""
 
     DEFAULT_MODEL_NAME = "medium"
 
@@ -33,80 +34,58 @@ class WhisperTranscriber:
         self.model_name = model_name or self.DEFAULT_MODEL_NAME
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Using device: {self.device}")
-        if self.device == "cuda":
-            print("CUDA acceleration enabled for Whisper transcription.")
+        
+        # In faster-whisper, float16 is standard for GPU, int8 for CPU.
+        self.compute_type = "float16" if self.device == "cuda" else "int8"
+        self.model = self._load_model()
 
-        self.model = self._load_model(self.device)
-
-    def transcribe_chunks(self, chunks: List[AudioChunk]) -> List[Dict[str, Any]]:
-        """
-        Run transcription for each chunk and normalize timestamps back to the
-        original audio timeline.
-        """
-        results: List[Dict[str, Any]] = []
-
-        if not chunks:
-            return results
-
-        total_chunks = len(chunks)
-        progress_bar = tqdm(
-            chunks,
-            total=total_chunks,
-            desc="Transcribing chunks",
-            unit="chunk",
-        )
-
-        for index, chunk in enumerate(progress_bar, start=1):
-            progress_bar.set_postfix_str(f"chunk {index}/{total_chunks}")
-
-            segments = self._transcribe_with_fallback(str(chunk.path))
-
-            for segment in segments:
-                start = chunk.start_time + float(segment.start)
-                end = chunk.start_time + float(segment.end)
-                text = segment.text.strip()
-                if not text:
-                    continue
-                results.append(
-                    {
-                        "start": start,
-                        "end": end,
-                        "text": text,
-                    }
-                )
-
-        progress_bar.close()
-        return results
-
-    def _load_model(self, device: str) -> WhisperModel:
-        compute_type = "float16" if device == "cuda" else "int8"
+    def _load_model(self) -> WhisperModel:
+        """Loads the Whisper model into the selected device."""
         return WhisperModel(
             self.model_name,
-            device=device,
-            compute_type=compute_type,
+            device=self.device,
+            compute_type=self.compute_type,
         )
 
-    def _run_transcription(self, file_path: str):
-        segments, _ = self.model.transcribe(
-            file_path,
-            language="ja",
-            task="transcribe",
-            beam_size=5,
-            vad_filter=True,
-        )
-        return list(segments)
-
-    def _transcribe_with_fallback(self, file_path: str):
+    def transcribe(self, audio_path: Path) -> List[Dict[str, Any]]:
+        """
+        Transcribes the entire audio file using faster-whisper's built-in 
+        long-form audio support and VAD filtering.
+        """
+        print(f"Starting transcription of: {audio_path.name}")
+        
         try:
-            return self._run_transcription(file_path)
-        except RuntimeError as exc:
-            needs_fallback = self.device == "cuda" and "CUDNN_STATUS_NOT_INITIALIZED" in str(
-                exc
+            segments, info = self.model.transcribe(
+                str(audio_path),
+                language="ja",
+                task="transcribe",
+                beam_size=5,
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=500)
             )
-            if not needs_fallback:
-                raise
-
-            print("cuDNN initialization failed. Falling back to CPU for transcription.")
-            self.device = "cpu"
-            self.model = self._load_model(self.device)
-            return self._run_transcription(file_path)
+            
+            results = []
+            # We wrap the segments generator in tqdm to show progress.
+            # info.duration gives the total length in seconds.
+            with tqdm(total=round(info.duration), desc="Transcribing", unit="sec") as pbar:
+                last_pos = 0
+                for segment in segments:
+                    results.append({
+                        "start": segment.start,
+                        "end": segment.end,
+                        "text": segment.text.strip()
+                    })
+                    # Update progress bar based on current timestamp
+                    pbar.update(round(segment.end - last_pos))
+                    last_pos = segment.end
+                    
+            return results
+            
+        except RuntimeError as e:
+            if "CUDNN_STATUS_NOT_INITIALIZED" in str(e) and self.device == "cuda":
+                print("\n[WARNING] cuDNN failure. Falling back to CPU...")
+                self.device = "cpu"
+                self.compute_type = "int8"
+                self.model = self._load_model()
+                return self.transcribe(audio_path)
+            raise e

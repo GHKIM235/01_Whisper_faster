@@ -11,7 +11,7 @@ from tqdm.auto import tqdm
 class JapaneseToKoreanTranslator:
     """Wraps deep-translator so we can swap implementations if needed."""
 
-    BATCH_SIZE = 10
+    BATCH_SIZE = 50
     PROGRESS_FILE = Path("progress.json")
 
     def __init__(self, source: str = "ja", target: str = "ko"):

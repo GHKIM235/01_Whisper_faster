@@ -1,5 +1,4 @@
 faster-whisper
-pydub
 deep-translator
 tqdm
 torch
