@@ -40,4 +40,9 @@ WORK_DIR = "work"
 DEVICE = "auto"
 COMPUTE_TYPE = "auto"
 CLEANUP_TEMP_FILES = False
-USE_VAD_FILTER = True
+USE_VAD_FILTER = True # Movie 모드 기본값
+
+# --- 6. 작업 모드 설정 ---
+# 'movie': 영화/드라마/강의 등 대화 중심 (VAD 사용, 일반 번역)
+# 'music': 노래 가사 중심 (VAD 미사용, 강력한 환각 방지, 가사 힌트 제공)
+DEFAULT_MODE = "movie"

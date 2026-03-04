@@ -4,3 +4,4 @@ deepl
 python-dotenv
 tqdm
 torch
+pynvml
