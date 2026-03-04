@@ -29,6 +29,8 @@ def extract_audio(video_path: Path, output_dir: Path) -> Path:
         "1",           # Mono
         "-ar",
         "16000",       # 16kHz
+        "-acodec",
+        "pcm_s16le",    # Ensure high compatibility PCM
         str(audio_path),
     ]
 

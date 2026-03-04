@@ -44,6 +44,16 @@ def get_video_files(input_dir: Path) -> List[Path]:
         files.extend(list(input_dir.glob(f"*{ext.upper()}")))
     return sorted(list(set(files)))
 
+import time
+
+def backup_existing_file(file_path: Path):
+    """If file exists, rename it with a timestamp to avoid overwriting."""
+    if file_path.exists():
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        backup_path = file_path.with_name(f"{file_path.stem}_{timestamp}{file_path.suffix}")
+        file_path.rename(backup_path)
+        print(f"Backed up existing file to: {backup_path.name}")
+
 def process_single_video(
     video_path: Path, 
     transcriber: WhisperTranscriber, 
@@ -66,16 +76,28 @@ def process_single_video(
     ja_srt_path = output_dir / f"{video_path.stem}_{config.SOURCE_LANGUAGE}.srt"
     json_path = output_dir / f"{video_path.stem}_segments.json"
     
+    # Backup before writing new ones
+    backup_existing_file(ja_srt_path)
+    backup_existing_file(json_path)
+    
     write_srt(segments, ja_srt_path)
     save_segments(segments, json_path, source_video=video_path)
     print(f"Saved {config.SOURCE_LANGUAGE.upper()} subtitles: {ja_srt_path.name}")
 
     if not skip_translate:
-        translator = JapaneseToKoreanTranslator()
-        translated_segments = translator.translate_segments(segments)
-        ko_srt_path = output_dir / f"{video_path.stem}_{config.TARGET_LANGUAGE}.srt"
-        write_srt(translated_segments, ko_srt_path)
-        print(f"Saved {config.TARGET_LANGUAGE.upper()} subtitles: {ko_srt_path.name}")
+        try:
+            translator = JapaneseToKoreanTranslator()
+            translated_segments = translator.translate_segments(segments)
+            ko_srt_path = output_dir / f"{video_path.stem}_{config.TARGET_LANGUAGE}.srt"
+            
+            backup_existing_file(ko_srt_path)
+            
+            write_srt(translated_segments, ko_srt_path)
+            print(f"Saved {config.TARGET_LANGUAGE.upper()} subtitles: {ko_srt_path.name}")
+        except Exception as translate_e:
+            print(f"\n[ERROR] Translation/Writing failed: {translate_e}")
+            import traceback
+            traceback.print_exc()
 
     if config.CLEANUP_TEMP_FILES and work_dir.exists():
         print(f"Cleaning up temp files in: {work_dir}")

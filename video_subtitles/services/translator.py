@@ -67,10 +67,10 @@ class JapaneseToKoreanTranslator:
                 source_lang=self.source, 
                 target_lang=self.target
             )
-            # result can be a single TextResult or a list of TextResult
+            # DeepL SDK always returns a list of TextResult when input is a list
             if isinstance(result, list):
                 return [r.text for r in result]
-            return [result.text]
+            return [result.text] if hasattr(result, 'text') else [str(result)]
         else:
             # Google (via deep-translator)
             combined_text = "\n".join(texts)

@@ -70,8 +70,12 @@ class WhisperTranscriber:
                 language=config.SOURCE_LANGUAGE,
                 task="transcribe",
                 beam_size=5,
-                vad_filter=config.USE_VAD_FILTER,
-                vad_parameters=dict(min_silence_duration_ms=500)
+                vad_filter=False,  # Turn off VAD for music
+                initial_prompt="これは歌の歌詞입니다. 노래 가사(Lyrics)를 정확히 받아쓰기 하세요.",
+                repetition_penalty=1.5,
+                no_speech_threshold=0.6,
+                log_prob_threshold=-1.0,
+                condition_on_previous_text=False  # Avoid context drift/hallucination
             )
             
             results = []

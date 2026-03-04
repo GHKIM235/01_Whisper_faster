@@ -15,7 +15,7 @@ env_path = Path(__file__).parent / '.env'
 load_dotenv(dotenv_path=env_path)
 
 # --- 1. Whisper 모델 설정 ---
-MODEL_NAME = "medium"
+MODEL_NAME = "large-v3"
 
 # --- 2. 언어 설정 ---
 SOURCE_LANGUAGE = "ja"
