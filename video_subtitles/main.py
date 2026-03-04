@@ -7,18 +7,23 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Add the project root to sys.path so we can import config.py
-# This resolves "config" import error in IDEs and when running from subfolder
-project_root = Path(__file__).parent.parent
-sys.path.append(str(project_root))
+# --- 경로 설정 (CRITICAL: IDE 및 실행 시 경로 인식 문제 해결) ---
+# 1. 파일이 위치한 현재 폴더(video_subtitles/)를 먼저 인식시킵니다.
+current_dir = Path(__file__).parent.resolve()
+sys.path.insert(0, str(current_dir))
+
+# 2. 상위 폴더(프로젝트 루트)를 인식시켜 config.py를 찾습니다.
+project_root = current_dir.parent.resolve()
+sys.path.insert(1, str(project_root))
 
 try:
     import config
 except ImportError:
-    # If still not found, search in current directory as fallback
-    sys.path.append(str(Path(__file__).parent))
+    # 만약 config.py를 못 찾는다면 현재 위치(루트가 아닐 경우)에서 재탐색
+    sys.path.append(os.getcwd())
     import config
 
+# 서비스 및 유틸리티 임포트 (이제 services가 최상단에 노출되므로 인식 가능)
 from services.audio_extractor import extract_audio
 from services.transcriber import WhisperTranscriber
 from services.translator import JapaneseToKoreanTranslator
@@ -26,7 +31,7 @@ from services.srt_writer import write_srt
 from utils.segment_store import save_segments
 
 def setup_directories():
-    """Create configured directories."""
+    """Create configured directories at project root."""
     Path(config.INPUT_DIR).mkdir(exist_ok=True)
     Path(config.OUTPUT_DIR).mkdir(exist_ok=True)
     Path(config.WORK_DIR).mkdir(exist_ok=True)
@@ -72,7 +77,6 @@ def process_single_video(
         write_srt(translated_segments, ko_srt_path)
         print(f"Saved {config.TARGET_LANGUAGE.upper()} subtitles: {ko_srt_path.name}")
 
-    # Cleanup temp audio if configured
     if config.CLEANUP_TEMP_FILES and work_dir.exists():
         print(f"Cleaning up temp files in: {work_dir}")
         shutil.rmtree(work_dir)
