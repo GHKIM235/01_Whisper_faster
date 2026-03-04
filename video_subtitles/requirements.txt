@@ -1,4 +1,6 @@
 faster-whisper
 deep-translator
+deepl
+python-dotenv
 tqdm
 torch

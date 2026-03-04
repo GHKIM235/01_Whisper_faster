@@ -1,11 +1,17 @@
-"""Translation layer using central config."""
+"""Translation layer using multiple engines (Google/DeepL)."""
 
 import json
 import sys
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from deep_translator import GoogleTranslator
+try:
+    import deepl
+except ImportError:
+    deepl = None
+
 from tqdm.auto import tqdm
 
 # Import central config
@@ -18,20 +24,61 @@ except ImportError:
         TARGET_LANGUAGE = "ko"
         TRANSLATION_BATCH_SIZE = 50
         MAX_CHARS_PER_BATCH = 4000
+        TRANSLATION_ENGINE = "google"
+        DEEPL_API_KEY = ""
+        WORK_DIR = "work"
     config = ConfigMock()
 
 class JapaneseToKoreanTranslator:
-    """Wraps deep-translator with config-driven settings."""
+    """Wraps deep-translator and DeepL official SDK."""
 
     def __init__(self, source: str = None, target: str = None):
-        source = source or config.SOURCE_LANGUAGE
-        target = target or config.TARGET_LANGUAGE
-        self.client = GoogleTranslator(source=source, target=target)
+        self.source = (source or config.SOURCE_LANGUAGE).upper()
+        self.target = (target or config.TARGET_LANGUAGE).upper()
+        # DeepL uses 'JA', 'KO' but Google uses 'ja', 'ko'
+        
+        self.engine = config.TRANSLATION_ENGINE.lower()
         self.progress_file = Path(config.WORK_DIR) / "translation_progress.json"
+        
+        # Initialize selected engine
+        self.deepl_client = None
+        self.google_client = None
+        
+        if self.engine == "deepl" and deepl and config.DEEPL_API_KEY:
+            try:
+                self.deepl_client = deepl.Translator(config.DEEPL_API_KEY)
+                print(f"Using DeepL translation engine ({self.source} -> {self.target})")
+            except Exception as e:
+                print(f"Failed to init DeepL: {e}. Falling back to Google.")
+                self.engine = "google"
+        
+        if self.engine == "google" or not self.deepl_client:
+            self.google_client = GoogleTranslator(source=self.source.lower(), target=self.target.lower())
+            print(f"Using Google translation engine ({self.source.lower()} -> {self.target.lower()})")
+
+    def _translate_batch(self, texts: List[str]) -> List[str]:
+        """Core translation logic for a single batch."""
+        if not texts: return []
+        
+        if self.engine == "deepl" and self.deepl_client:
+            # DeepL SDK handles list of strings directly and preserves line breaks
+            result = self.deepl_client.translate_text(
+                texts, 
+                source_lang=self.source, 
+                target_lang=self.target
+            )
+            # result can be a single TextResult or a list of TextResult
+            if isinstance(result, list):
+                return [r.text for r in result]
+            return [result.text]
+        else:
+            # Google (via deep-translator)
+            combined_text = "\n".join(texts)
+            translated_batch = self.google_client.translate(combined_text)
+            return [line.strip() for line in translated_batch.splitlines()]
 
     def translate_segments(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        if not segments:
-            return []
+        if not segments: return []
 
         self.progress_file.parent.mkdir(parents=True, exist_ok=True)
         last_completed, completed_map = self._load_progress()
@@ -48,7 +95,7 @@ class JapaneseToKoreanTranslator:
 
         progress_bar = tqdm(
             total=total_segments,
-            desc=f"Translating ({config.SOURCE_LANGUAGE} -> {config.TARGET_LANGUAGE})",
+            desc=f"Translating ({self.engine})",
             unit="seg",
             initial=start_index,
         )
@@ -59,6 +106,7 @@ class JapaneseToKoreanTranslator:
             batch_texts = []
             current_chars = 0
             
+            # Batching logic
             for i in range(current_idx, total_segments):
                 text = segments[i]["text"]
                 if current_chars + len(text) + 1 > config.MAX_CHARS_PER_BATCH:
@@ -78,11 +126,10 @@ class JapaneseToKoreanTranslator:
 
             if not batch_indices: break
 
-            combined_text = "\n".join(batch_texts)
             try:
-                translated_batch = self.client.translate(combined_text)
-                translated_lines = [line.strip() for line in translated_batch.splitlines()]
+                translated_lines = self._translate_batch(batch_texts)
                 
+                # Verify match
                 for idx, translated_line in zip(batch_indices, translated_lines):
                     translated_map[idx] = {**segments[idx], "text": translated_line}
                     completed_map[idx] = translated_line
