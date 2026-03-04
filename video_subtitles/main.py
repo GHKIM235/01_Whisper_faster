@@ -1,175 +1,100 @@
-"""Command-line entry point for generating subtitles from Japanese audio."""
-import os
+"""Batch processing script driven by central config."""
+
 import argparse
+import sys
+import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
+
+# Import central config
+import config
 
 from services.audio_extractor import extract_audio
 from services.transcriber import WhisperTranscriber
 from services.translator import JapaneseToKoreanTranslator
 from services.srt_writer import write_srt
-from utils.segment_store import load_segments, save_segments
+from utils.segment_store import save_segments
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Generate Japanese subtitles immediately and Korean subtitles either now or later.",
-    )
-    parser.add_argument(
-        "video_path",
-        nargs="?",
-        type=str,
-        help="Path to the input mp4 video file to transcribe.",
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=WhisperTranscriber.DEFAULT_MODEL_NAME,
-        help="Whisper model size to load (default: medium).",
-    )
-    parser.add_argument(
-        "--translate-from",
-        type=str,
-        help="Translate a previously saved segments JSON file into Korean subtitles.",
-    )
-    parser.add_argument(
-        "--korean-output",
-        type=str,
-        help="Optional override for the Korean SRT output path when translating.",
-    )
-    parser.add_argument(
-        "--skip-translate",
-        action="store_true",
-        help="Create only Japanese subtitles now and defer Korean translation.",
-    )
-    return parser
+def setup_directories():
+    """Create configured directories."""
+    Path(config.INPUT_DIR).mkdir(exist_ok=True)
+    Path(config.OUTPUT_DIR).mkdir(exist_ok=True)
+    Path(config.WORK_DIR).mkdir(exist_ok=True)
 
+def get_video_files(input_dir: Path) -> List[Path]:
+    extensions = [".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm"]
+    files = []
+    for ext in extensions:
+        files.extend(list(input_dir.glob(f"*{ext}")))
+        files.extend(list(input_dir.glob(f"*{ext.upper()}")))
+    return sorted(list(set(files)))
 
-def run_transcription_pipeline(
-    video_path: Path,
-    model_name: str,
-    *,
-    translate: bool = True,
-    translation_output: Optional[Path] = None,
-) -> Tuple[List[Dict[str, Any]], Path, Path, Optional[Path]]:
-    """
-    Extract audio, run Whisper, emit Japanese subtitles, persist segments, and optionally translate.
-    """
-    video_path = video_path.expanduser().resolve()
-    if not video_path.exists():
-        raise FileNotFoundError(f"Video not found: {video_path}")
+def process_single_video(
+    video_path: Path, 
+    transcriber: WhisperTranscriber, 
+    skip_translate: bool = False
+):
+    print(f"\n{'='*60}")
+    print(f"Processing: {video_path.name}")
+    print(f"{'='*60}")
 
-    working_dir = video_path.parent / f"{video_path.stem}_work"
-    audio_path = extract_audio(video_path, working_dir)
+    work_dir = Path(config.WORK_DIR) / video_path.stem
+    work_dir.mkdir(parents=True, exist_ok=True)
+    audio_path = extract_audio(video_path, work_dir)
 
-    transcriber = WhisperTranscriber(model_name=model_name)
     segments = transcriber.transcribe(audio_path)
-    
     if not segments:
-        raise RuntimeError("No transcription segments were produced.")
-
-    ja_output_path = video_path.with_name(f"{video_path.stem}_ja.srt")
-    write_srt(segments, ja_output_path)
-
-    segments_path = video_path.with_name(f"{video_path.stem}_segments.json")
-    save_segments(segments, segments_path, source_video=video_path)
-    
-    ko_output_path: Optional[Path] = None
-    if translate:
-        ko_output_path = _write_korean_srt(
-            segments,
-            segments_file=segments_path,
-            source_video=video_path,
-            output_override=translation_output,
-        )
-    return segments, ja_output_path, segments_path, ko_output_path
-
-
-def translate_saved_segments(
-    segments_file: Path,
-    *,
-    output_override: Optional[Path] = None,
-) -> Path:
-    """
-    Load saved segments and produce a Korean SRT translation.
-    """
-    file_path = segments_file.expanduser().resolve()
-    if not file_path.exists():
-        raise FileNotFoundError(f"Segments file not found: {file_path}")
-
-    segments, source_video = load_segments(file_path)
-    if not segments:
-        raise RuntimeError(f"No segments found in {file_path}")
-
-    return _write_korean_srt(
-        segments,
-        segments_file=file_path,
-        source_video=source_video,
-        output_override=output_override,
-    )
-
-
-def _derive_korean_output(segments_file: Path, source_video: Optional[Path]) -> Path:
-    """
-    Decide on a reasonable default Korean subtitle filename.
-    """
-    if source_video:
-        return source_video.with_name(f"{source_video.stem}_ko.srt")
-
-    stem = segments_file.stem
-    suffix = "_segments"
-    if stem.endswith(suffix):
-        stem = stem[: -len(suffix)]
-    return segments_file.with_name(f"{stem}_ko.srt")
-
-
-def _write_korean_srt(
-    segments: List[Dict[str, Any]],
-    *,
-    segments_file: Path,
-    source_video: Optional[Path],
-    output_override: Optional[Path],
-) -> Path:
-    translator = JapaneseToKoreanTranslator()
-    translated_segments = translator.translate_segments(segments)
-    output_path = output_override or _derive_korean_output(segments_file, source_video)
-    write_srt(translated_segments, output_path)
-    return output_path
-
-
-def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
-
-    if args.translate_from:
-        output_override = (
-            Path(args.korean_output).expanduser().resolve() if args.korean_output else None
-        )
-        output_path = translate_saved_segments(
-            Path(args.translate_from),
-            output_override=output_override,
-        )
-        print(f"Korean subtitles saved to: {output_path}")
+        print(f"No speech detected. Skipping.")
         return
 
-    if not args.video_path:
-        parser.error("You must provide a video path to transcribe or use --translate-from.")
+    output_dir = Path(config.OUTPUT_DIR)
+    ja_srt_path = output_dir / f"{video_path.stem}_{config.SOURCE_LANGUAGE}.srt"
+    json_path = output_dir / f"{video_path.stem}_segments.json"
+    
+    write_srt(segments, ja_srt_path)
+    save_segments(segments, json_path, source_video=video_path)
+    print(f"Saved {config.SOURCE_LANGUAGE.upper()} subtitles: {ja_srt_path.name}")
 
-    output_override = (
-        Path(args.korean_output).expanduser().resolve() if args.korean_output else None
-    )
-    segments, ja_path, segments_path, ko_path = run_transcription_pipeline(
-        Path(args.video_path),
-        args.model,
-        translate=not args.skip_translate,
-        translation_output=output_override,
-    )
-    print(f"Japanese subtitles saved to: {ja_path}")
-    print(f"Segments saved to: {segments_path}")
-    if ko_path:
-        print(f"Korean subtitles saved to: {ko_path}")
+    if not skip_translate:
+        translator = JapaneseToKoreanTranslator()
+        translated_segments = translator.translate_segments(segments)
+        ko_srt_path = output_dir / f"{video_path.stem}_{config.TARGET_LANGUAGE}.srt"
+        write_srt(translated_segments, ko_srt_path)
+        print(f"Saved {config.TARGET_LANGUAGE.upper()} subtitles: {ko_srt_path.name}")
+
+    # Cleanup temp audio if configured
+    if config.CLEANUP_TEMP_FILES and work_dir.exists():
+        print(f"Cleaning up temp files in: {work_dir}")
+        shutil.rmtree(work_dir)
+
+def main():
+    parser = argparse.ArgumentParser(description="Automated Subtitle Generator")
+    parser.add_argument("--model", type=str, default=config.MODEL_NAME, help="Whisper model size")
+    parser.add_argument("--skip-translate", action="store_true", help="Skip translation")
+    parser.add_argument("--file", type=str, help="Process a specific file")
+    args = parser.parse_args()
+
+    setup_directories()
+    transcriber = WhisperTranscriber(model_name=args.model)
+
+    if args.file:
+        video_files = [Path(args.file)]
     else:
-        print("Run again with --translate-from <segments_json> to generate Korean subtitles.")
+        video_files = get_video_files(Path(config.INPUT_DIR))
+        if not video_files:
+            print(f"No video files found in '{config.INPUT_DIR}' folder.")
+            return
 
+    print(f"Found {len(video_files)} files to process.")
+    for i, video_path in enumerate(video_files, 1):
+        try:
+            print(f"\n[Progress: {i}/{len(video_files)}]")
+            process_single_video(video_path, transcriber, args.skip_translate)
+        except Exception as e:
+            print(f"\n[CRITICAL ERROR] Failed to process {video_path.name}: {e}")
+            continue
+
+    print(f"\n{'='*60}\nAll tasks completed!\n{'='*60}")
 
 if __name__ == "__main__":
     main()
