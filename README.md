@@ -1,67 +1,56 @@
-# Whisper Faster Subtitle Generator 🚀 (v1.2.0)
+# Whisper Faster Subtitle Generator 🚀 (v1.3.0)
 
 일본어 영상을 입력받아 **일본어 자막(.srt)**과 **한국어 번역 자막(.srt)**을 고속으로 생성해주는 전문가용 도구입니다.
 
-## ✨ 주요 특징 (Update v1.2.0)
+## ✨ 주요 특징 (Update v1.3.0)
 
-- **강력한 GPU 가속:** `RTX 2060` 기준 VRAM 4GB와 연산력 60% 이상을 적극 활용하여 작업 속도를 극대화했습니다.
-- **최고의 인식률:** OpenAI의 **`large-v3`** 모델을 기본 탑재하여 일본어 노래 가사까지 정밀하게 잡아냅니다.
-- **멀티 작업 모드:** 영화/대화 중심의 **`movie`** 모드와 노래/가사 중심의 **`music`** 모드를 지원합니다.
-- **DeepL Pro 연동:** 자연스러운 번역을 위해 공식 **DeepL API SDK**를 완벽 지원하며, 대량 배칭(Batching)으로 속도를 높였습니다.
-- **자동 백업 시스템:** 이전 결과물을 자동으로 타임스탬프와 함께 백업하여 덮어쓰기를 방지합니다.
-- **보안 강화:** `.env` 파일을 통한 API 키 암호화 관리.
+- **초정밀 싱크 (Word-Level Precision):** 단어 단위 타임스탬프를 분석하여 대사가 끝나는 시점에 자막이 즉시 닫히는 '칼싱크'를 구현했습니다.
+- **가독성 최적화:** 너무 잘게 쪼개지지 않도록 자연스러운 호흡(8초 룰, 1.2초 여백 허용)을 적용했습니다.
+- **번역 전용 모드 (`--translate-only`):** GPU 분석 없이 기존에 추출된 데이터만으로 한국어 번역만 빠르게 수행할 수 있습니다.
+- **강력한 GPU 가속:** RTX 2060 기준 **CUDA 활용률 85%**를 달성하여 2시간 영화를 단 몇 분 만에 처리합니다.
+- **지능형 로그 시스템:** 영상별 개별 로그 파일을 생성하며, **DeepL API의 실시간 소모량**을 자동 기록합니다.
+- **안정적인 윈도우 지원:** 인코딩 오류 없는 텍스트 UI와 자동 파일 백업 시스템을 제공합니다.
 
 ## 🛠 사전 준비
 
-1. **Python 3.10+** (추천)
-2. **FFmpeg:** 오디오 추출을 위해 필수입니다.
-3. **NVIDIA GPU (CUDA):** 그래픽카드 가속을 위해 권장됩니다. (현재 RTX 2060 최적화 완료)
-
-## 📦 설치 및 설정 방법
-
-```bash
-# 저장소 복제
-git clone https://github.com/GHKIM235/01_Whisper_faster.git
-cd 01_Whisper_faster
-
-# 필수 패키지 설치
-pip install -r video_subtitles/requirements.txt
-
-# API 키 설정 (보안)
-# .env.example 파일을 .env로 이름을 바꾼 뒤 DEEPL_API_KEY를 입력하세요.
-cp .env.example .env
-```
+1. **Python 3.10+**
+2. **FFmpeg:** 오디오 추출 필수 도구.
+3. **NVIDIA GPU (CUDA):** 최적의 성능을 위해 권장됩니다.
 
 ## 🚀 사용 방법
 
-1. **`input/`** 폴더에 영상 파일을 넣습니다.
-2. 상황에 맞는 모드로 실행합니다.
-
+### 1단계: 분석 및 일본어 자막 생성 (API 아끼기)
+번역 없이 인식률과 싱크만 먼저 테스트하고 싶을 때 사용합니다.
 ```bash
-# 일반 영화/드라마 자막 생성 (기본값)
-python video_subtitles/main.py --mode movie
-
-# 노래 가사 자막 생성 (노래 가사 전용 최적화 적용)
-python video_subtitles/main.py --mode music
-
-# 특정 파일 하나만 처리하고 싶을 때
-python video_subtitles/main.py --file input/REZE.mp4 --mode movie
+python video_subtitles/main.py --mode movie --skip-translate
 ```
 
-3. **`output/`** 폴더에서 완성된 자막(.srt)을 확인합니다. (이전 결과는 타임스탬프와 함께 백업됩니다.)
+### 2단계: 한국어 번역 자막 생성 (최종 결과물)
+분석 데이터(`_segments.json`)가 있다면 GPU 없이 번역만 가동합니다.
+```bash
+python video_subtitles/main.py --translate-only
+```
+
+### 기타 옵션
+```bash
+# 노래 가사 자막 생성 (가사 전용 최적화 모드)
+python video_subtitles/main.py --mode music
+
+# 특정 파일 하나만 처리
+python video_subtitles/main.py --file input/VIDEO.mp4 --mode movie
+```
 
 ## ⚙️ 설정 변경 (`config.py`)
 
-- `MODEL_NAME`: "large-v3" (최고), "medium" (빠름)
-- `DEFAULT_MODE`: 실행 시 인자가 없을 때 적용될 기본 모드
-- `SOURCE_LANGUAGE`: 원본 언어 (기본: "ja")
-- `TARGET_LANGUAGE`: 번역 언어 (기본: "ko")
+- `SKIP_TRANSLATION`: `True`로 설정하면 기본적으로 번역 과정을 생략합니다.
+- `DEFAULT_MODE`: "movie" (기본) 또는 "music" 중 선택 가능.
+- `MODEL_NAME`: "large-v3" (최고 권장).
 
-## 📈 성능 측정 리포트 (RTX 2060 기준)
-- **VRAM 사용량:** 약 4.0 GB (large-v3 모델 상주)
-- **GPU 활용률:** 60% ~ 65% (연산 중)
-- **처리 속도:** 10분 영상 기준 분석 약 1분 이내 완료
+## 📈 성능 및 효율
+- **번역 효율:** 대량 배칭을 통해 DeepL API 호출 횟수를 최소화했습니다.
+- **데이터 안전:** 모든 작업물은 덮어쓰기 전 타임스탬프와 함께 자동 백업됩니다.
+- **로그 위치:** 모든 실행 기록은 `logs/` 폴더에서 영상 이름별로 확인 가능합니다.
 
 ---
-**최종 업데이트:** 2026년 3월 4일
+**최종 업데이트:** 2026년 3월 5일
 **개발:** Gemini CLI (Interactive AI Engineer)

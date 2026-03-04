@@ -56,6 +56,17 @@ class JapaneseToKoreanTranslator:
             self.google_client = GoogleTranslator(source=self.source.lower(), target=self.target.lower())
             print(f"Using Google translation engine ({self.source.lower()} -> {self.target.lower()})")
 
+    def get_usage(self) -> str:
+        """Fetch current DeepL API usage (characters)."""
+        if self.engine == "deepl" and self.deepl_client:
+            try:
+                usage = self.deepl_client.get_usage()
+                if usage.character:
+                    return f"{usage.character.count:,} / {usage.character.limit:,} characters"
+            except Exception as e:
+                return f"Usage error: {e}"
+        return "N/A (Google Translate)"
+
     def _translate_batch(self, texts: List[str]) -> List[str]:
         """Core translation logic for a single batch."""
         if not texts: return []

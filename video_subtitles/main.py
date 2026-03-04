@@ -26,7 +26,7 @@ from services.audio_extractor import extract_audio
 from services.transcriber import WhisperTranscriber
 from services.translator import JapaneseToKoreanTranslator
 from services.srt_writer import write_srt
-from utils.segment_store import save_segments
+from utils.segment_store import save_segments, load_segments
 
 class Logger:
     """Redirects stdout/stderr to both console and a log file."""
@@ -37,18 +37,22 @@ class Logger:
     def write(self, message):
         self.terminal.write(message)
         self.log.write(message)
-        self.log.flush() # Ensure real-time saving
+        self.log.flush()
 
     def flush(self):
         self.terminal.flush()
         self.log.flush()
+
+    def close(self):
+        if self.log:
+            self.log.close()
 
 def setup_directories():
     """Create configured directories at project root."""
     Path(config.INPUT_DIR).mkdir(exist_ok=True)
     Path(config.OUTPUT_DIR).mkdir(exist_ok=True)
     Path(config.WORK_DIR).mkdir(exist_ok=True)
-    Path("logs").mkdir(exist_ok=True) # Create logs directory
+    Path("logs").mkdir(exist_ok=True)
 
 def get_video_files(input_dir: Path) -> List[Path]:
     extensions = [".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm"]
@@ -57,6 +61,10 @@ def get_video_files(input_dir: Path) -> List[Path]:
         files.extend(list(input_dir.glob(f"*{ext}")))
         files.extend(list(input_dir.glob(f"*{ext.upper()}")))
     return sorted(list(set(files)))
+
+def get_json_files(output_dir: Path) -> List[Path]:
+    """Find all segment JSON files in the output directory."""
+    return sorted(list(output_dir.glob("*_segments.json")))
 
 def backup_existing_file(file_path: Path):
     """If file exists, rename it with a timestamp to avoid overwriting."""
@@ -68,101 +76,172 @@ def backup_existing_file(file_path: Path):
     return None
 
 def process_single_video(
-    video_path: Path, 
-    transcriber: WhisperTranscriber, 
+    task_path: Path, 
+    transcriber: Optional[WhisperTranscriber], 
     mode: str = "movie",
-    skip_translate: bool = False
+    skip_translate: bool = False,
+    translate_only: bool = False
 ):
     start_time = time.time()
+    
+    # Handle filename logic (whether task_path is video or json)
+    if task_path.suffix.lower() == ".json":
+        file_stem = task_path.name.replace("_segments.json", "")
+        display_name = f"{file_stem} (from JSON)"
+    else:
+        file_stem = task_path.stem
+        display_name = task_path.name
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    log_name = f"{file_stem}_session_{timestamp}.log"
+    log_path = Path("logs") / log_name
+    
+    # Initialize logger
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    video_logger = Logger(log_path)
+    sys.stdout = video_logger
+    sys.stderr = video_logger
+
     print(f"\n[START] {'-'*15} Processing Start {'-'*15}")
-    print(f"File   : {video_path.name}")
+    print(f"Target : {display_name}")
     print(f"Mode   : {mode.upper()}")
+    if translate_only: print(f"Type   : TRANSLATE-ONLY")
     print(f"{'-'*48}")
 
-    work_dir = Path(config.WORK_DIR) / video_path.stem
-    work_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Audio Extraction
-    audio_path = extract_audio(video_path, work_dir)
+    try:
+        output_dir = Path(config.OUTPUT_DIR)
+        json_path = output_dir / f"{file_stem}_segments.json"
+        segments = []
 
-    # Transcription
-    segments = transcriber.transcribe(audio_path, mode=mode)
-    if not segments:
-        print(f"[WARN] No speech detected. Skipping.")
-        return
-
-    output_dir = Path(config.OUTPUT_DIR)
-    ja_srt_path = output_dir / f"{video_path.stem}_{config.SOURCE_LANGUAGE}.srt"
-    json_path = output_dir / f"{video_path.stem}_segments.json"
-    
-    # Backup & Save JA
-    backup_ja = backup_existing_file(ja_srt_path)
-    if backup_ja: print(f"[BACKUP] Created: {backup_ja.name}")
-    
-    write_srt(segments, ja_srt_path)
-    save_segments(segments, json_path, source_video=video_path)
-    print(f"[SUCCESS] Saved JA Subtitles: {ja_srt_path.name}")
-
-    # Translation
-    if not skip_translate:
-        try:
-            translator = JapaneseToKoreanTranslator()
-            translated_segments = translator.translate_segments(segments)
-            ko_srt_path = output_dir / f"{video_path.stem}_{config.TARGET_LANGUAGE}.srt"
+        if translate_only:
+            # --- TRANSLATE ONLY MODE ---
+            if not json_path.exists():
+                print(f"[ERROR] Segments file not found: {json_path.name}")
+                return
             
-            backup_ko = backup_existing_file(ko_srt_path)
-            if backup_ko: print(f"[BACKUP] Created: {backup_ko.name}")
+            print(f"[LOAD] Loading segments from: {json_path.name}")
+            segments, _ = load_segments(json_path)
+        else:
+            # --- NORMAL MODE (Extraction + Whisper) ---
+            work_dir = Path(config.WORK_DIR) / file_stem
+            work_dir.mkdir(parents=True, exist_ok=True)
             
-            write_srt(translated_segments, ko_srt_path)
-            print(f"[SUCCESS] Saved KO Subtitles: {ko_srt_path.name}")
-        except Exception as translate_e:
-            print(f"\n[ERROR] Translation failed: {translate_e}")
+            # Audio Extraction (Requires video to exist)
+            if not task_path.exists():
+                print(f"[ERROR] Video file not found: {task_path}")
+                return
+                
+            audio_path = extract_audio(task_path, work_dir)
 
-    elapsed = time.time() - start_time
-    print(f"{'-'*48}")
-    print(f"[DONE] Processed: {video_path.name}")
-    print(f"[REPORT] Time Taken: {elapsed:.2f}s | Segments: {len(segments)}")
-    print(f"{'-'*48}")
+            # Transcription
+            if not transcriber:
+                print("[ERROR] Transcriber not initialized.")
+                return
+            segments = transcriber.transcribe(audio_path, mode=mode)
+            
+            if not segments:
+                print(f"[WARN] No speech detected. Skipping.")
+                return
 
-    if config.CLEANUP_TEMP_FILES and work_dir.exists():
-        shutil.rmtree(work_dir)
+            # Save Japanese SRT & Raw JSON
+            ja_srt_path = output_dir / f"{file_stem}_{config.SOURCE_LANGUAGE}.srt"
+            backup_ja = backup_existing_file(ja_srt_path)
+            if backup_ja: print(f"[BACKUP] Created: {backup_ja.name}")
+            
+            write_srt(segments, ja_srt_path)
+            save_segments(segments, json_path, source_video=task_path)
+            print(f"[SUCCESS] Saved JA Subtitles: {ja_srt_path.name}")
+
+        # --- Translation Step ---
+        deepl_usage = "N/A"
+        if (not skip_translate or translate_only) and segments:
+            try:
+                print(f"[RUN] Starting Translation...")
+                translator = JapaneseToKoreanTranslator()
+                translated_segments = translator.translate_segments(segments)
+                ko_srt_path = output_dir / f"{file_stem}_{config.TARGET_LANGUAGE}.srt"
+                
+                backup_ko = backup_existing_file(ko_srt_path)
+                if backup_ko: print(f"[BACKUP] Created: {backup_ko.name}")
+                
+                write_srt(translated_segments, ko_srt_path)
+                print(f"[SUCCESS] Saved KO Subtitles: {ko_srt_path.name}")
+                
+                deepl_usage = translator.get_usage()
+            except Exception as translate_e:
+                print(f"\n[ERROR] Translation failed: {translate_e}")
+
+        elapsed = time.time() - start_time
+        print(f"{'-'*48}")
+        print(f"[DONE] Processed: {file_stem}")
+        print(f"[REPORT] Time Taken : {elapsed:.2f}s")
+        print(f"[REPORT] Segments   : {len(segments)}")
+        if not skip_translate or translate_only:
+            print(f"[REPORT] DeepL Usage: {deepl_usage}")
+        print(f"{'-'*48}")
+
+    finally:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        video_logger.close()
 
 def main():
     parser = argparse.ArgumentParser(description="Automated Subtitle Generator")
     parser.add_argument("--model", type=str, default=config.MODEL_NAME, help="Whisper model size")
     parser.add_argument("--mode", type=str, default=config.DEFAULT_MODE, choices=["movie", "music"], help="Processing mode")
-    parser.add_argument("--skip-translate", action="store_true", help="Skip translation")
-    parser.add_argument("--file", type=str, help="Process a specific file")
+    parser.add_argument("--skip-translate", action="store_true", default=config.SKIP_TRANSLATION, help="Skip translation")
+    parser.add_argument("--translate-only", action="store_true", help="Translate existing segments JSON without transcription")
+    parser.add_argument("--file", type=str, help="Process a specific video or JSON file")
     args = parser.parse_args()
-
-    # Setup Logging
-    setup_directories()
-    log_name = f"session_{time.strftime('%Y%m%d_%H%M%S')}.log"
-    log_path = Path("logs") / log_name
-    sys.stdout = Logger(log_path)
-    sys.stderr = sys.stdout # Capture errors too
 
     print(f"\n{'='*50}")
     print(f"  WHISPER FASTER SUBTITLE GENERATOR v1.2.0")
-    print(f"  Log File: {log_path}")
+    if args.translate_only:
+        print(f"  [STATUS] Mode: TRANSLATE-ONLY (GPU Analysis Skipped)")
+    elif args.skip_translate:
+        print(f"  [STATUS] Translation: DISABLED (API Savings Mode)")
+    else:
+        print(f"  [STATUS] Translation: ENABLED")
     print(f"{'='*50}")
 
-    transcriber = WhisperTranscriber(model_name=args.model)
-
-    if args.file:
-        video_files = [Path(args.file)]
-    else:
-        video_files = get_video_files(Path(config.INPUT_DIR))
-        if not video_files:
-            print(f"[INFO] No video files found in '{config.INPUT_DIR}' folder.")
-            return
-
-    print(f"[INFO] Total Task: {len(video_files)} files found.")
+    setup_directories()
     
-    for i, video_path in enumerate(video_files, 1):
+    # Initialize transcriber only if needed
+    transcriber = None
+    if not args.translate_only:
+        transcriber = WhisperTranscriber(model_name=args.model)
+
+    # Resolve task list
+    task_files = []
+    if args.file:
+        task_files = [Path(args.file)]
+    else:
+        if args.translate_only:
+            # Scan output folder for JSONs
+            task_files = get_json_files(Path(config.OUTPUT_DIR))
+            if not task_files:
+                print(f"[INFO] No segment JSON files found in '{config.OUTPUT_DIR}'.")
+                return
+        else:
+            # Scan input folder for Videos
+            task_files = get_video_files(Path(config.INPUT_DIR))
+            if not task_files:
+                print(f"[INFO] No video files found in '{config.INPUT_DIR}'.")
+                return
+
+    print(f"[INFO] Total Task: {len(task_files)} targets found.")
+    
+    for i, task_path in enumerate(task_files, 1):
         try:
-            print(f"\n[TASK {i}/{len(video_files)}]")
-            process_single_video(video_path, transcriber, mode=args.mode, skip_translate=args.skip_translate)
+            print(f"\n[TASK {i}/{len(task_files)}] Processing: {task_path.name}")
+            process_single_video(
+                task_path, 
+                transcriber, 
+                mode=args.mode, 
+                skip_translate=args.skip_translate,
+                translate_only=args.translate_only
+            )
         except Exception as e:
             print(f"\n[CRITICAL ERROR] Task {i} failed: {e}")
             continue

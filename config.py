@@ -30,6 +30,7 @@ DEEPL_API_KEY = os.getenv("DEEPL_API_KEY", "")
 
 TRANSLATION_BATCH_SIZE = 50
 MAX_CHARS_PER_BATCH = 4000
+SKIP_TRANSLATION = False # True로 설정하면 번역 단계를 건너뜁니다 (API 절약용)
 
 # --- 4. 경로 설정 ---
 INPUT_DIR = "input"

@@ -42,7 +42,6 @@ class WhisperTranscriber:
         self.model_name = model_name or config.MODEL_NAME
         self.gpu_info_available = False
         
-        # Initialize NVML for GPU monitoring
         try:
             pynvml.nvmlInit()
             self.gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
@@ -50,13 +49,11 @@ class WhisperTranscriber:
         except:
             pass
 
-        # Decide on device (GPU/CPU)
         if config.DEVICE == "auto":
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
             self.device = config.DEVICE
             
-        # Decide on compute_type
         if config.COMPUTE_TYPE == "auto":
             self.compute_type = "float16" if self.device == "cuda" else "int8"
         else:
@@ -66,7 +63,6 @@ class WhisperTranscriber:
         self.model = self._load_model()
 
     def _get_gpu_stats(self) -> str:
-        """Returns a string representing current GPU usage."""
         if not self.gpu_info_available or self.device != "cuda":
             return ""
         try:
@@ -87,19 +83,26 @@ class WhisperTranscriber:
     def transcribe(self, audio_path: Path, mode: str = "movie") -> List[Dict[str, Any]]:
         print(f"[RUN] Starting Analysis [Mode: {mode.upper()}] : {audio_path.name}")
         
-        # --- Mode-specific params ---
         if mode.lower() == "music":
             vad_filter = False
             initial_prompt = "これは歌의 歌詞입니다. 노래 가사(Lyrics)를 정확히 받아쓰기 하세요."
             repetition_penalty = 1.5
             no_speech_threshold = 0.6
             condition_on_previous_text = False
+            vad_params = None
         else:
+            # Movie/Dialogue settings: Natural readability
             vad_filter = config.USE_VAD_FILTER
-            initial_prompt = "これは映画の台詞です. 自然に書き起こしてください。"
+            initial_prompt = "これは映画의 台詞입니다. 자연스럽게 받아쓰기 하세요."
             repetition_penalty = 1.1
-            no_speech_threshold = 0.5
-            condition_on_previous_text = True
+            no_speech_threshold = 0.6
+            condition_on_previous_text = False
+            vad_params = dict(
+                threshold=0.45,             # Balanced sensitivity
+                min_silence_duration_ms=500, # Smoother transition
+                min_speech_duration_ms=250,
+                speech_pad_ms=300            # Enough padding for natural fade
+            )
 
         try:
             segments, info = self.model.transcribe(
@@ -108,28 +111,55 @@ class WhisperTranscriber:
                 task="transcribe",
                 beam_size=5,
                 vad_filter=vad_filter,
-                vad_parameters=dict(min_silence_duration_ms=1000) if vad_filter else None,
+                vad_parameters=vad_params,
                 initial_prompt=initial_prompt,
-                repetition_penalty=repetition_penalty,
+                repetition_penalty=1.2,
                 no_speech_threshold=no_speech_threshold,
                 log_prob_threshold=-1.0,
-                condition_on_previous_text=condition_on_previous_text
+                condition_on_previous_text=condition_on_previous_text,
+                word_timestamps=True
             )
             
             results = []
             bar_format = "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
             
+            # --- Natural Splitting Logic ---
+            MAX_SEGMENT_DURATION = 8.0  # Up to 8 seconds
+            MAX_GAP_DURATION = 1.2      # Allow small pauses between words
+            
             with tqdm(total=round(info.duration), desc="[ANALYZING]", unit="sec", bar_format=bar_format) as pbar:
                 last_pos = 0
                 for segment in segments:
-                    results.append({
-                        "start": segment.start,
-                        "end": segment.end,
-                        "text": segment.text.strip()
-                    })
+                    if segment.words:
+                        current_sub_text = []
+                        sub_start = segment.words[0].start
+                        
+                        for i, word in enumerate(segment.words):
+                            current_sub_text.append(word.word.strip())
+                            
+                            is_last_word = (i == len(segment.words) - 1)
+                            gap_to_next = 0 if is_last_word else (segment.words[i+1].start - word.end)
+                            duration_so_far = word.end - sub_start
+                            
+                            # Split only if gap is large or subtitle is getting too long
+                            if is_last_word or gap_to_next > MAX_GAP_DURATION or duration_so_far > MAX_SEGMENT_DURATION:
+                                results.append({
+                                    "start": sub_start,
+                                    "end": word.end,
+                                    "text": "".join(current_sub_text) # Japanese doesn't need spaces
+                                })
+                                if not is_last_word:
+                                    sub_start = segment.words[i+1].start
+                                    current_sub_text = []
+                    else:
+                        results.append({
+                            "start": segment.start,
+                            "end": segment.end,
+                            "text": segment.text.strip()
+                        })
+                    
                     pbar.update(round(segment.end - last_pos))
                     last_pos = segment.end
-                    # Update real-time GPU stats
                     pbar.set_postfix_str(self._get_gpu_stats())
             return results
         except RuntimeError as e:
