@@ -3,11 +3,21 @@
 import argparse
 import sys
 import shutil
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Import central config
-import config
+# Add the project root to sys.path so we can import config.py
+# This resolves "config" import error in IDEs and when running from subfolder
+project_root = Path(__file__).parent.parent
+sys.path.append(str(project_root))
+
+try:
+    import config
+except ImportError:
+    # If still not found, search in current directory as fallback
+    sys.path.append(str(Path(__file__).parent))
+    import config
 
 from services.audio_extractor import extract_audio
 from services.transcriber import WhisperTranscriber
