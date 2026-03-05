@@ -31,3 +31,5 @@ input/
 *.srt
 *_segments.json
 .vscode/
+
+logs/

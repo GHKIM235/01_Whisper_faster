@@ -49,8 +49,11 @@ class Logger:
 
 def setup_directories():
     """Create configured directories at project root."""
+    output_dir = Path(config.OUTPUT_DIR)
     Path(config.INPUT_DIR).mkdir(exist_ok=True)
-    Path(config.OUTPUT_DIR).mkdir(exist_ok=True)
+    output_dir.mkdir(exist_ok=True)
+    (output_dir / "jp").mkdir(exist_ok=True)
+    (output_dir / "json").mkdir(exist_ok=True)
     Path(config.WORK_DIR).mkdir(exist_ok=True)
     Path("logs").mkdir(exist_ok=True)
 
@@ -63,8 +66,12 @@ def get_video_files(input_dir: Path) -> List[Path]:
     return sorted(list(set(files)))
 
 def get_json_files(output_dir: Path) -> List[Path]:
-    """Find all segment JSON files in the output directory."""
-    return sorted(list(output_dir.glob("*_segments.json")))
+    """Find all segment JSON files in the output directory (including subfolders)."""
+    json_dir = output_dir / "json"
+    files = list(json_dir.glob("*_segments.json")) if json_dir.exists() else []
+    # 루트 폴더에서도 찾아봄 (하위 호환성)
+    files.extend(list(output_dir.glob("*_segments.json")))
+    return sorted(list(set(files)))
 
 def backup_existing_file(file_path: Path):
     """If file exists, rename it with a timestamp to avoid overwriting."""
@@ -111,11 +118,15 @@ def process_single_video(
 
     try:
         output_dir = Path(config.OUTPUT_DIR)
-        json_path = output_dir / f"{file_stem}_segments.json"
+        json_path = output_dir / "json" / f"{file_stem}_segments.json"
         segments = []
 
         if translate_only:
             # --- TRANSLATE ONLY MODE ---
+            if not json_path.exists():
+                # 루트 폴더에서도 찾아봄 (하위 호환성)
+                json_path = output_dir / f"{file_stem}_segments.json"
+                
             if not json_path.exists():
                 print(f"[ERROR] Segments file not found: {json_path.name}")
                 return
@@ -145,13 +156,13 @@ def process_single_video(
                 return
 
             # Save Japanese SRT & Raw JSON
-            ja_srt_path = output_dir / f"{file_stem}_{config.SOURCE_LANGUAGE}.srt"
-            backup_ja = backup_existing_file(ja_srt_path)
-            if backup_ja: print(f"[BACKUP] Created: {backup_ja.name}")
+            jp_srt_path = output_dir / "jp" / f"{file_stem}_jp.srt"
+            backup_jp = backup_existing_file(jp_srt_path)
+            if backup_jp: print(f"[BACKUP] Created: {backup_jp.name}")
             
-            write_srt(segments, ja_srt_path)
+            write_srt(segments, jp_srt_path)
             save_segments(segments, json_path, source_video=task_path)
-            print(f"[SUCCESS] Saved JA Subtitles: {ja_srt_path.name}")
+            print(f"[SUCCESS] Saved JP Subtitles: {jp_srt_path.name}")
 
         # --- Translation Step ---
         deepl_usage = "N/A"
@@ -160,7 +171,7 @@ def process_single_video(
                 print(f"[RUN] Starting Translation...")
                 translator = JapaneseToKoreanTranslator()
                 translated_segments = translator.translate_segments(segments)
-                ko_srt_path = output_dir / f"{file_stem}_{config.TARGET_LANGUAGE}.srt"
+                ko_srt_path = output_dir / f"{file_stem}.srt"
                 
                 backup_ko = backup_existing_file(ko_srt_path)
                 if backup_ko: print(f"[BACKUP] Created: {backup_ko.name}")
@@ -215,7 +226,16 @@ def main():
     # Resolve task list
     task_files = []
     if args.file:
-        task_files = [Path(args.file)]
+        p = Path(args.file)
+        if p.is_dir():
+            # 폴더 경로가 입력된 경우 해당 폴더 내의 영상 스캔
+            task_files = get_video_files(p)
+            if not task_files:
+                print(f"[INFO] No video files found in directory: {p}")
+                return
+            print(f"[INFO] Directory detected. Found {len(task_files)} videos in: {p.name}")
+        else:
+            task_files = [p]
     else:
         if args.translate_only:
             # Scan output folder for JSONs
