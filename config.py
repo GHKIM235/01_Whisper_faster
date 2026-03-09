@@ -39,11 +39,20 @@ WORK_DIR = "work"
 
 # --- 5. 기타 설정 ---
 DEVICE = "auto"
-COMPUTE_TYPE = "auto"
+# 'float16': 최고 정확도 (권장, VRAM 6GB 이상)
+# 'int8_float16': 속도와 정확도 균형 (VRAM 부족 시)
+# 'int8': 최적의 속도 (VRAM 매우 부족 시)
+COMPUTE_TYPE = "float16" 
+
 CLEANUP_TEMP_FILES = False
 USE_VAD_FILTER = True # Movie 모드 기본값
 
-# --- 6. 작업 모드 설정 ---
+# --- 6. 고급 오디오 전처리 ---
+# True로 설정 시 배경음/음악을 제거하고 목소리만 추출하여 인식률을 높입니다.
+# (처음 실행 시 분리 모델 다운로드로 인해 시간이 다소 소요될 수 있습니다.)
+USE_VOCAL_SEPARATION = False 
+
+# --- 7. 작업 모드 설정 ---
 # 'movie': 영화/드라마/강의 등 대화 중심 (VAD 사용, 일반 번역)
 # 'music': 노래 가사 중심 (VAD 미사용, 강력한 환각 방지, 가사 힌트 제공)
 DEFAULT_MODE = "movie"

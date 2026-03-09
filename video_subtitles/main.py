@@ -23,6 +23,7 @@ except ImportError:
 
 # 서비스 및 유틸리티 임포트
 from services.audio_extractor import extract_audio
+from services.vocal_separator import separate_vocals
 from services.transcriber import WhisperTranscriber
 from services.translator import JapaneseToKoreanTranslator
 from services.srt_writer import write_srt
@@ -144,6 +145,9 @@ def process_single_video(
                 return
                 
             audio_path = extract_audio(task_path, work_dir)
+
+            # Vocal Separation (Optional Pre-processing)
+            audio_path = separate_vocals(audio_path, work_dir)
 
             # Transcription
             if not transcriber:
