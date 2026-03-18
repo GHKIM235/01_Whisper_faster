@@ -59,7 +59,7 @@ def setup_directories():
     Path("logs").mkdir(exist_ok=True)
 
 def get_video_files(input_dir: Path) -> List[Path]:
-    extensions = [".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm"]
+    extensions = [".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".wmv"]
     files = []
     for ext in extensions:
         files.extend(list(input_dir.glob(f"*{ext}")))
