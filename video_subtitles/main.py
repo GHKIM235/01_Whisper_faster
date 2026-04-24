@@ -27,6 +27,7 @@ from services.vocal_separator import separate_vocals
 from services.transcriber import WhisperTranscriber
 from services.translator import JapaneseToKoreanTranslator
 from services.srt_writer import write_srt
+from services.gap_rescuer import GapRescuer
 from utils.segment_store import save_segments, load_segments
 
 class Logger:
@@ -88,7 +89,8 @@ def process_single_video(
     transcriber: Optional[WhisperTranscriber], 
     mode: str = "movie",
     skip_translate: bool = False,
-    translate_only: bool = False
+    translate_only: bool = False,
+    enable_rescue: bool = False
 ):
     start_time = time.time()
     
@@ -168,6 +170,22 @@ def process_single_video(
             save_segments(segments, json_path, source_video=task_path)
             print(f"[SUCCESS] Saved JP Subtitles: {jp_srt_path.name}")
 
+            # --- Gap Rescue Step (Optional) ---
+            if enable_rescue:
+                # Force backup before modifying
+                backup_json = backup_existing_file(json_path)
+                if backup_json: print(f"[BACKUP] JSON saved: {backup_json.name}")
+                
+                rescuer = GapRescuer(transcriber)
+                rescued_segments = rescuer.rescue(segments, audio_path)
+                
+                if len(rescued_segments) > len(segments):
+                    segments = rescued_segments
+                    # Overwrite with rescued segments
+                    write_srt(segments, jp_srt_path)
+                    save_segments(segments, json_path, source_video=task_path)
+                    print(f"[SUCCESS] Updated JP Subtitles with rescued lines.")
+
         # --- Translation Step ---
         deepl_usage = "N/A"
         if (not skip_translate or translate_only) and segments:
@@ -207,7 +225,8 @@ def main():
     parser.add_argument("--mode", type=str, default=config.DEFAULT_MODE, choices=["movie", "music"], help="Processing mode")
     parser.add_argument("--skip-translate", action="store_true", default=config.SKIP_TRANSLATION, help="Skip translation")
     parser.add_argument("--translate-only", action="store_true", help="Translate existing segments JSON without transcription")
-    parser.add_argument("--file", type=str, help="Process a specific video or JSON file")
+    parser.add_argument("--rescue", action="store_true", default=config.ENABLE_GAP_RESCUE, help="Enable high-recall gap rescue analysis")
+    parser.add_argument("target", type=str, nargs='?', help="Specific video, JSON, or directory to process (default: input folder)")
     args = parser.parse_args()
 
     print(f"\n{'='*50}")
@@ -218,6 +237,10 @@ def main():
         print(f"  [STATUS] Translation: DISABLED (API Savings Mode)")
     else:
         print(f"  [STATUS] Translation: ENABLED")
+    
+    if args.rescue:
+        print(f"  [STATUS] Gap Rescue : ENABLED (High Recall Mode)")
+    
     print(f"{'='*50}")
 
     setup_directories()
@@ -229,15 +252,15 @@ def main():
 
     # Resolve task list
     task_files = []
-    if args.file:
-        p = Path(args.file)
+    if args.target:
+        p = Path(args.target)
         if p.is_dir():
             # 폴더 경로가 입력된 경우 해당 폴더 내의 영상 스캔
             task_files = get_video_files(p)
             if not task_files:
                 print(f"[INFO] No video files found in directory: {p}")
                 return
-            print(f"[INFO] Directory detected. Found {len(task_files)} videos in: {p.name}")
+            print(f"[INFO] Target directory: {p.name} ({len(task_files)} videos found)")
         else:
             task_files = [p]
     else:
@@ -264,7 +287,8 @@ def main():
                 transcriber, 
                 mode=args.mode, 
                 skip_translate=args.skip_translate,
-                translate_only=args.translate_only
+                translate_only=args.translate_only,
+                enable_rescue=args.rescue
             )
         except Exception as e:
             print(f"\n[CRITICAL ERROR] Task {i} failed: {e}")

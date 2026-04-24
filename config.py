@@ -56,3 +56,7 @@ USE_VOCAL_SEPARATION = False
 # 'movie': 영화/드라마/강의 등 대화 중심 (VAD 사용, 일반 번역)
 # 'music': 노래 가사 중심 (VAD 미사용, 강력한 환각 방지, 가사 힌트 제공)
 DEFAULT_MODE = "movie"
+# --- 8. 자막 공백 복구 (Gap Rescue) 설정 ---
+# True로 설정하면 자막 사이의 긴 공백을 다시 분석하여 누락된 대사를 복구합니다.
+# (평소에는 False로 두고, 결과물에 누락이 많을 때만 사용하세요.)
+ENABLE_GAP_RESCUE = False

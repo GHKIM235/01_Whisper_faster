@@ -170,3 +170,37 @@ class WhisperTranscriber:
                 self.model = self._load_model()
                 return self.transcribe(audio_path)
             raise e
+    def transcribe_gap(self, audio_path: Path, start_sec: float, end_sec: float) -> List[Dict[str, Any]]:
+        """High-recall transcription for a specific time range to rescue missed dialogue."""
+        duration = end_sec - start_sec
+        if duration < 0.5: # Too short to analyze
+            return []
+
+        print(f"[RESCUE] Re-analyzing Gap: {start_sec:.2f}s - {end_sec:.2f}s ({duration:.2f}s)")
+        
+        try:
+            # High-recall settings for gap rescue
+            segments, _ = self.model.transcribe(
+                str(audio_path),
+                language=config.SOURCE_LANGUAGE,
+                clip_timestamps=(start_sec, end_sec),
+                vad_filter=False,  # Disable VAD to catch faint speech
+                initial_prompt="これは聞き取りにくい台詞です。漏らさず書き起こしてください。",
+                no_speech_threshold=0.3, # More aggressive
+                log_prob_threshold=-1.0,
+                condition_on_previous_text=False,
+                word_timestamps=True
+            )
+            
+            results = []
+            for segment in segments:
+                if segment.text.strip():
+                    results.append({
+                        "start": segment.start,
+                        "end": segment.end,
+                        "text": segment.text.strip()
+                    })
+            return results
+        except Exception as e:
+            print(f"[RESCUE_ERROR] Failed to analyze gap: {e}")
+            return []
