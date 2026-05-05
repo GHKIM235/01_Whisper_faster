@@ -6,3 +6,4 @@ tqdm
 torch
 pynvml
 demucs
+tkinterdnd2
