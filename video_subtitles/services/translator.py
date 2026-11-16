@@ -1,10 +1,11 @@
 """Translation layer using multiple engines (Google/DeepL) with multi-key support."""
 
+import hashlib
 import json
+import re
 import sys
-import os
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from deep_translator import GoogleTranslator
 try:
@@ -29,6 +30,7 @@ except ImportError:
         WORK_DIR = "work"
     config = ConfigMock()
 
+
 class JapaneseToKoreanTranslator:
     """Wraps deep-translator and DeepL official SDK with Multi-Key rotation."""
 
@@ -36,45 +38,55 @@ class JapaneseToKoreanTranslator:
         self.source = (source or config.SOURCE_LANGUAGE).upper()
         self.target = (target or config.TARGET_LANGUAGE).upper()
         self.engine = config.TRANSLATION_ENGINE.lower()
-        self.progress_file = Path(config.WORK_DIR) / "translation_progress.json"
-        
+        self.progress_dir = Path(config.WORK_DIR)
+        self.progress_file = self.progress_dir / "translation_progress.json"
+
         # Multi-Key Support
         all_keys = [k.strip() for k in config.DEEPL_API_KEY.split(",") if k.strip()]
         self.key_pool = all_keys
         self.current_key_index = 0
-        
+
         self.deepl_client: Optional[deepl.Translator] = None
         self.google_client = None
-        
+
         self._init_engine()
 
-    def _init_engine(self):
+    def _get_progress_file(self, progress_key: Optional[str]) -> Path:
+        if not progress_key:
+            return self.progress_dir / "translation_progress.json"
+        digest = hashlib.sha1(progress_key.encode("utf-8")).hexdigest()[:12]
+        return self.progress_dir / f"translation_progress_{digest}.json"
+
+    def _init_engine(self) -> None:
         """Initialize or rotate the translation engine."""
+        self.deepl_client = None
         if self.engine == "deepl" and deepl and self.key_pool:
-            try:
-                current_key = self.key_pool[self.current_key_index]
-                self.deepl_client = deepl.Translator(current_key)
-                print(f"[INIT] DeepL Engine (Key {self.current_key_index + 1}/{len(self.key_pool)})")
-            except Exception as e:
-                print(f"[WARN] Failed to init DeepL Key {self.current_key_index + 1}: {e}")
-                self._rotate_key()
-        
-        if self.engine == "google" or (self.engine == "deepl" and not self.deepl_client):
-            self.google_client = GoogleTranslator(source=self.source.lower(), target=self.target.lower())
-            print(f"[INIT] Google Translator (Backup)")
+            while self.current_key_index < len(self.key_pool):
+                try:
+                    current_key = self.key_pool[self.current_key_index]
+                    self.deepl_client = deepl.Translator(current_key)
+                    print(f"[INIT] DeepL Engine (Key {self.current_key_index + 1}/{len(self.key_pool)})")
+                    return
+                except Exception as e:
+                    print(f"[WARN] Failed to init DeepL Key {self.current_key_index + 1}: {e}")
+                    self.current_key_index += 1
+            print("🚨 All DeepL API Keys failed to initialize. Falling back to Google Translate.")
+            self.engine = "google"
+
+        self.google_client = GoogleTranslator(source=self.source.lower(), target=self.target.lower())
+        print("[INIT] Google Translator (Backup)" if self.key_pool else "[INIT] Google Translator")
 
     def _rotate_key(self) -> bool:
-        """Switch to the next DeepL key if available."""
+        """Switch to the next DeepL key if available, else fall back to Google."""
         self.current_key_index += 1
         if self.current_key_index < len(self.key_pool):
             print(f"🔄 Rotating DeepL API Key... (Switching to Key {self.current_key_index + 1})")
             self._init_engine()
-            return True
-        else:
-            print("🚨 All DeepL API Keys exhausted. Falling back to Google Translate.")
-            self.engine = "google"
-            self._init_engine()
-            return False
+            return self.engine == "deepl"
+        print("🚨 All DeepL API Keys exhausted. Falling back to Google Translate.")
+        self.engine = "google"
+        self._init_engine()
+        return False
 
     def get_usage(self) -> str:
         """Fetch current DeepL API usage (characters)."""
@@ -83,43 +95,81 @@ class JapaneseToKoreanTranslator:
                 usage = self.deepl_client.get_usage()
                 if usage.character:
                     return f"{usage.character.count:,} / {usage.character.limit:,} characters (Key {self.current_key_index + 1})"
-            except: pass
+            except Exception:
+                pass
         return "N/A (Google Translate)"
 
-    def _translate_batch(self, texts: List[str]) -> List[str]:
-        if not texts: return []
-        
-        if self.engine == "deepl" and self.deepl_client:
+    @staticmethod
+    def _clean_translation(text: str) -> str:
+        cleaned = re.sub(r"[ \t]+", " ", text).strip()
+        return cleaned
+
+    def _translate_google_aligned(self, texts: List[str]) -> List[str]:
+        """Translate via Google Translate while guaranteeing 1-to-1 line alignment."""
+        if not texts:
+            return []
+        sanitized = [" ".join(t.splitlines()).strip() for t in texts]
+        combined_text = "\n".join(sanitized)
+        translated_batch = self.google_client.translate(combined_text) or ""
+        lines = [self._clean_translation(line) for line in translated_batch.splitlines() if line.strip() or len(sanitized) == 1]
+
+        if len(lines) == len(sanitized):
+            return lines
+
+        if len(sanitized) == 1:
+            return [self._clean_translation(" ".join(translated_batch.splitlines()))]
+
+        mid = len(sanitized) // 2
+        return self._translate_google_aligned(sanitized[:mid]) + self._translate_google_aligned(sanitized[mid:])
+
+    def _translate_batch(self, texts: List[str], context: Optional[str] = None) -> List[str]:
+        if not texts:
+            return []
+
+        while self.engine == "deepl" and self.deepl_client:
             try:
-                result = self.deepl_client.translate_text(
-                    texts, 
-                    source_lang=self.source, 
-                    target_lang=self.target
-                )
+                kwargs: Dict[str, Any] = {
+                    "source_lang": self.source,
+                    "target_lang": self.target,
+                    "preserve_formatting": True,
+                }
+                if context:
+                    kwargs["context"] = context
+
+                try:
+                    result = self.deepl_client.translate_text(texts, **kwargs)
+                except Exception as ctx_err:
+                    # Retry without context if the API/endpoint rejects the context parameter
+                    if context and "context" in str(ctx_err).lower():
+                        kwargs.pop("context", None)
+                        result = self.deepl_client.translate_text(texts, **kwargs)
+                    else:
+                        raise
+
                 if isinstance(result, list):
-                    return [r.text for r in result]
-                return [result.text] if hasattr(result, 'text') else [str(result)]
-            
+                    return [self._clean_translation(r.text) for r in result]
+                return [self._clean_translation(result.text)] if hasattr(result, "text") else [self._clean_translation(str(result))]
+
             except deepl.QuotaExceededException:
                 print(f"\n⚠️  Key {self.current_key_index + 1} Quota Exceeded!")
-                if self._rotate_key():
-                    return self._translate_batch(texts) # Retry with new key
-                else:
-                    return self._translate_batch(texts) # Will fall back to Google in retry
+                if not self._rotate_key():
+                    break
             except Exception as e:
                 print(f"\n[ERROR] DeepL API Error: {e}")
-                if self._rotate_key():
-                    return self._translate_batch(texts)
-                return []
-        else:
-            # Google
-            combined_text = "\n".join(texts)
-            translated_batch = self.google_client.translate(combined_text)
-            return [line.strip() for line in translated_batch.splitlines()]
+                if not self._rotate_key():
+                    break
 
-    def translate_segments(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        if not segments: return []
+        return self._translate_google_aligned(texts)
 
+    def translate_segments(
+        self,
+        segments: List[Dict[str, Any]],
+        progress_key: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        if not segments:
+            return []
+
+        self.progress_file = self._get_progress_file(progress_key)
         self.progress_file.parent.mkdir(parents=True, exist_ok=True)
         last_completed, completed_map = self._load_progress()
         total_segments = len(segments)
@@ -131,6 +181,7 @@ class JapaneseToKoreanTranslator:
 
         start_index = min(last_completed + 1, total_segments)
         if start_index >= total_segments:
+            self._clear_progress()
             return [translated_map[i] for i in range(total_segments)]
 
         progress_bar = tqdm(
@@ -142,10 +193,11 @@ class JapaneseToKoreanTranslator:
 
         current_idx = start_index
         while current_idx < total_segments:
-            batch_indices = []
-            batch_texts = []
+            batch_start = current_idx
+            batch_indices: List[int] = []
+            batch_texts: List[str] = []
             current_chars = 0
-            
+
             for i in range(current_idx, total_segments):
                 text = segments[i]["text"]
                 if current_chars + len(text) + 1 > config.MAX_CHARS_PER_BATCH:
@@ -154,7 +206,7 @@ class JapaneseToKoreanTranslator:
                         batch_texts.append(text)
                         current_idx += 1
                     break
-                
+
                 batch_indices.append(i)
                 batch_texts.append(text)
                 current_chars += len(text) + 1
@@ -162,10 +214,16 @@ class JapaneseToKoreanTranslator:
                 if len(batch_indices) >= config.TRANSLATION_BATCH_SIZE:
                     break
 
-            if not batch_indices: break
+            if not batch_indices:
+                break
+
+            # Pass up to 3 preceding lines as free context for DeepL
+            ctx_start = max(0, batch_start - 3)
+            context_lines = [segments[k]["text"].strip() for k in range(ctx_start, batch_start) if segments[k].get("text")]
+            context = " ".join(context_lines)[-400:] if context_lines else None
 
             try:
-                translated_lines = self._translate_batch(batch_texts)
+                translated_lines = self._translate_batch(batch_texts, context=context)
                 for idx, translated_line in zip(batch_indices, translated_lines):
                     translated_map[idx] = {**segments[idx], "text": translated_line}
                     completed_map[idx] = translated_line
@@ -180,19 +238,27 @@ class JapaneseToKoreanTranslator:
         progress_bar.close()
         if len(translated_map) == total_segments:
             self._clear_progress()
-            
+
         return [translated_map.get(i, {**segments[i], "text": "[Error]"}) for i in range(total_segments)]
 
     def _load_progress(self) -> Tuple[int, Dict[int, str]]:
-        if not self.progress_file.exists(): return -1, {}
+        if not self.progress_file.exists():
+            return -1, {}
         try:
             data = json.loads(self.progress_file.read_text(encoding="utf-8"))
-            return int(data.get("last_completed_index", -1)), {int(idx): text for idx, text in data.get("translations", {}).items()}
-        except: return -1, {}
+            return int(data.get("last_completed_index", -1)), {
+                int(idx): text for idx, text in data.get("translations", {}).items()
+            }
+        except Exception:
+            return -1, {}
 
     def _save_progress(self, last_index: int, translations: Dict[int, str]) -> None:
-        payload = {"last_completed_index": last_index, "translations": {str(idx): text for idx, text in translations.items()}}
+        payload = {
+            "last_completed_index": last_index,
+            "translations": {str(idx): text for idx, text in translations.items()},
+        }
         self.progress_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     def _clear_progress(self) -> None:
-        if self.progress_file.exists(): self.progress_file.unlink()
+        if self.progress_file.exists():
+            self.progress_file.unlink()

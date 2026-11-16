@@ -22,7 +22,7 @@ except ImportError:
     DND_FILES = None
     TkinterDnD = None
 
-VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".wmv"}
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".wmv", ".ts", ".mpg", ".mpeg"}
 
 
 def split_drop_paths(raw: str) -> list[Path]:

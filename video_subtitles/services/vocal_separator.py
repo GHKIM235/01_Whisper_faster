@@ -1,6 +1,7 @@
 """Vocal separation service using Demucs to remove background noise."""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 import sys
@@ -64,9 +65,8 @@ def separate_vocals(audio_path: Path, output_dir: Path) -> Path:
                 os.remove(target_vocal_path)
             os.rename(vocal_path, target_vocal_path)
             
-            # Optional: Clean up demucs specific folder
-            # import shutil
-            # shutil.rmtree(output_dir / model_name)
+            # Clean up demucs temporary folder
+            shutil.rmtree(output_dir / model_name, ignore_errors=True)
             
             print(f"[SUCCESS] Vocal separation complete: {target_vocal_path.name}")
             return target_vocal_path

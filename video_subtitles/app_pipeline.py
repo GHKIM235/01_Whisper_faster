@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import shutil
@@ -119,6 +120,14 @@ def create_transcriber_if_needed(options: ProcessingOptions) -> Optional[Whisper
     return WhisperTranscriber(model_name=options.model_name)
 
 
+def _safe_slug(name: str, max_len: int = 60) -> str:
+    """Create a Windows-safe, bounded-length directory/log slug."""
+    if len(name) <= max_len:
+        return name
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+    return f"{name[:max_len].rstrip()}_{digest}"
+
+
 def process_single_video(
     task_path: Path,
     transcriber: Optional[WhisperTranscriber],
@@ -134,8 +143,9 @@ def process_single_video(
         file_stem = task_path.stem
         display_name = task_path.name
 
+    safe_slug = _safe_slug(file_stem)
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    log_path = Path("logs") / f"{file_stem}_session_{timestamp}.log"
+    log_path = Path("logs") / f"{safe_slug}_session_{timestamp}.log"
 
     original_stdout = sys.stdout
     original_stderr = sys.stderr
@@ -168,7 +178,7 @@ def process_single_video(
             print(f"[LOAD] Loading segments from: {json_path.name}")
             segments, _ = load_segments(json_path)
         else:
-            work_dir = Path(config.WORK_DIR) / file_stem
+            work_dir = Path(config.WORK_DIR) / safe_slug
             work_dir.mkdir(parents=True, exist_ok=True)
 
             if not task_path.exists():
@@ -214,7 +224,7 @@ def process_single_video(
             try:
                 print("[RUN] Starting Translation...")
                 translator = JapaneseToKoreanTranslator()
-                translated_segments = translator.translate_segments(segments)
+                translated_segments = translator.translate_segments(segments, progress_key=file_stem)
                 ko_srt_path = output_dir / f"{file_stem}.srt"
 
                 backup_ko = backup_existing_file(ko_srt_path)

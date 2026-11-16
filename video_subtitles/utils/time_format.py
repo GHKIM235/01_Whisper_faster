@@ -5,7 +5,7 @@ def format_timestamp(seconds: float) -> str:
     """
     Convert seconds (accepts floats) into the SRT HH:MM:SS,mmm format.
     """
-    total_ms = int(round(seconds * 1000))
+    total_ms = max(0, int(round(seconds * 1000)))
     hours = total_ms // 3_600_000
     minutes = (total_ms % 3_600_000) // 60_000
     secs = (total_ms % 60_000) // 1000

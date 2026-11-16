@@ -35,10 +35,13 @@ def extract_audio(video_path: Path, output_dir: Path) -> Path:
     ]
 
     try:
-        # Run quietly to keep the terminal clean
-        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Run quietly unless an error occurs
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     except subprocess.CalledProcessError as e:
+        err_msg = (e.stderr or "").strip()
         print(f"[ERROR] ffmpeg failed: {e}")
+        if err_msg:
+            print(f"[ERROR] ffmpeg stderr: {err_msg}")
         raise RuntimeError(f"Could not extract audio from {video_path}")
 
     return audio_path
